@@ -200,7 +200,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, watch } from "vue";
 import { useAccountStore } from "../stores/accountStore";
 
 interface Account {
@@ -208,32 +208,59 @@ interface Account {
   type: "LDAP" | "Локальная";
   login: string;
   password: string | null;
-  errors: {
-    label: boolean;
-    type: boolean;
-    login: boolean;
-    password: boolean;
-  };
+  labels: { text: string }[];
+  errors: { label: boolean; type: boolean; login: boolean; password: boolean };
 }
-
-const passwordVisible = ref<boolean[]>([]);
-
-onMounted(() => {
-  passwordVisible.value = accounts.value.map(() => false);
-});
-
-const togglePasswordVisibility = (index: number) => {
-  passwordVisible.value[index] = !passwordVisible.value[index];
-};
 
 const accountStore = useAccountStore();
 
-const accounts = ref(
+const accounts = ref<Account[]>(
   accountStore.accounts.map((acc) => ({
     ...acc,
     errors: { label: false, type: false, login: false, password: false },
   }))
 );
+
+const passwordVisible = ref<boolean[]>([]);
+onMounted(() => {
+  passwordVisible.value = accounts.value.map(() => false);
+});
+watch(
+  () => accounts.value.length,
+  (len, prev) => {
+    if (len > prev) passwordVisible.value.push(false);
+    else if (len < prev) passwordVisible.value.splice(len);
+  }
+);
+
+const togglePasswordVisibility = (index: number) => {
+  passwordVisible.value[index] = !passwordVisible.value[index];
+};
+
+const validate = (acc: Account) => {
+  const login = acc.login.trim();
+  const pwd = acc.type === "Локальная" ? (acc.password ?? "").trim() : null;
+
+  const errors = {
+    label: false,
+    type: !acc.type,
+    login: login.length === 0,
+    password: acc.type === "Локальная" && (!pwd || pwd.length === 0),
+  };
+  return { errors, isValid: !Object.values(errors).some(Boolean) };
+};
+
+const toPersist = (acc: Account) => ({
+  label: acc.label,
+  type: acc.type,
+  login: acc.login.trim(),
+  password: acc.type === "LDAP" ? null : (acc.password ?? "").trim(),
+  labels: acc.label
+    .split(";")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((text) => ({ text })),
+});
 
 const addAccount = () => {
   accounts.value.push({
@@ -241,51 +268,31 @@ const addAccount = () => {
     type: "LDAP",
     login: "",
     password: null,
-    errors: { label: false, type: false, login: false, password: false },
     labels: [],
+    errors: { label: false, type: false, login: false, password: false },
   });
+  passwordVisible.value.push(false);
 };
 
 const removeAccount = (index: number) => {
   accounts.value.splice(index, 1);
-  accountStore.saveAccounts(
-    accounts.value.map((acc) => ({
-      label: acc.label,
-      type: acc.type,
-      login: acc.login,
-      password: acc.password,
-      labels: acc.label
-        .split(";")
-        .filter((l) => l.trim())
-        .map((l) => ({ text: l.trim() })),
-    }))
-  );
+  passwordVisible.value.splice(index, 1);
+  const persisted = [...accountStore.accounts];
+  persisted.splice(index, 1);
+  accountStore.saveAccounts(persisted);
 };
 
 const validateAndSave = (index: number) => {
-  const account = accounts.value[index];
-  account.errors = {
-    label: false,
-    type: !account.type,
-    login: !account.login,
-    password: account.type === "Локальная" && !account.password,
-  };
+  const acc = accounts.value[index];
 
-  if (!Object.values(account.errors).some((error) => error)) {
-    const labels = account.label
-      .split(";")
-      .filter((l) => l.trim())
-      .map((l) => ({ text: l.trim() }));
+  if (acc.type === "LDAP") acc.password = null;
 
-    accountStore.saveAccounts(
-      accounts.value.map((acc) => ({
-        label: acc.label,
-        type: acc.type,
-        login: acc.login,
-        password: acc.password,
-        labels,
-      }))
-    );
-  }
+  const { errors, isValid } = validate(acc);
+  acc.errors = errors;
+
+  if (!isValid) return;
+  const persisted = [...accountStore.accounts];
+  persisted[index] = toPersist(acc);
+  accountStore.saveAccounts(persisted);
 };
 </script>
